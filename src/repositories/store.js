@@ -6,12 +6,42 @@
  * Uses MySQL when DB_HOST is set (as it is under docker-compose), and falls
  * back to an in-memory store otherwise. The fallback means the API and its
  * tests run anywhere without a database, which keeps the pipeline reliable.
+ *
+ * MySQL returns snake_case columns and DECIMAL values as strings, so every
+ * query result is normalised to the same camelCase shape the in-memory store
+ * uses. Without this the forecasting service receives undefined dates.
  */
 
 const seed = require('./seedData');
 
 let pool = null;
 let memory = null;
+
+function toDateString(value) {
+  if (!value) return value;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+function normaliseInvoice(row) {
+  return {
+    id: row.id,
+    client: row.client,
+    amount: Number(row.amount),
+    dueDate: toDateString(row.due_date ?? row.dueDate),
+    status: row.status,
+  };
+}
+
+function normaliseExpense(row) {
+  return {
+    id: row.id,
+    description: row.description,
+    amount: Number(row.amount),
+    dueDate: toDateString(row.due_date ?? row.dueDate),
+    frequency: row.frequency,
+  };
+}
 
 async function init() {
   if (process.env.DB_HOST) {
@@ -39,7 +69,7 @@ function ensureMemory() {
 async function listInvoices() {
   if (pool) {
     const [rows] = await pool.query('SELECT * FROM invoices');
-    return rows;
+    return rows.map(normaliseInvoice);
   }
   return ensureMemory().invoices;
 }
@@ -59,7 +89,7 @@ async function addInvoice(invoice) {
 async function listExpenses() {
   if (pool) {
     const [rows] = await pool.query('SELECT * FROM expenses');
-    return rows;
+    return rows.map(normaliseExpense);
   }
   return ensureMemory().expenses;
 }
@@ -79,7 +109,12 @@ async function addExpense(expense) {
 async function getAccount() {
   if (pool) {
     const [rows] = await pool.query('SELECT * FROM account LIMIT 1');
-    return rows[0] || { opening_balance: 0 };
+    const row = rows[0];
+    if (!row) return { openingBalance: 0, startDate: new Date().toISOString().slice(0, 10) };
+    return {
+      openingBalance: Number(row.opening_balance ?? row.openingBalance ?? 0),
+      startDate: toDateString(row.start_date ?? row.startDate),
+    };
   }
   return ensureMemory().account;
 }
