@@ -1,0 +1,30 @@
+{
+  "name": "cashrunway-api",
+  "version": "1.0.0",
+  "description": "13-week cash-flow forecasting API for sole traders and micro-businesses",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "jest --coverage --ci --reporters=default --reporters=jest-junit",
+    "test:watch": "jest --watch",
+    "lint": "eslint src tests --max-warnings=0",
+    "build": "echo \"No bundling required for Node API - artefact is the Docker image\""
+  },
+  "jest-junit": {
+    "outputDirectory": "reports",
+    "outputName": "junit.xml"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mysql2": "^3.9.7",
+    "prom-client": "^15.1.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "jest-junit": "^16.0.0",
+    "supertest": "^7.0.0"
+  },
+  "engines": { "node": ">=18" }
+}

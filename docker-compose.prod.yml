@@ -1,0 +1,37 @@
+services:
+  api:
+    image: cashrunway-api:${RELEASE_TAG:-stable}
+    container_name: cashrunway-prod
+    environment:
+      PORT: 3000
+      APP_VERSION: ${RELEASE_TAG:-stable}
+      DB_HOST: db
+      DB_USER: cashrunway
+      DB_PASSWORD: cashrunway
+      DB_NAME: cashrunway
+    ports:
+      - "3002:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mysql:8
+    container_name: cashrunway-prod-db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: cashrunway
+      MYSQL_USER: cashrunway
+      MYSQL_PASSWORD: cashrunway
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - cashrunway-prod-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prootpw"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  cashrunway-prod-data:
