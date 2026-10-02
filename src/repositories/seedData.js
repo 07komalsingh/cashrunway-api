@@ -5,7 +5,7 @@
  * something meaningful to show.
  */
 module.exports = {
-  account: { openingBalance: 8200, startDate: '2026-01-05' },
+  account: { openingBalance: 5000, startDate: '2026-01-05' },
   invoices: [
     { id: 'INV-1042', client: 'Harbour Dental', amount: 1100, dueDate: '2026-01-19', status: 'unpaid' },
     { id: 'INV-1043', client: 'Northside Cafe', amount: 2400, dueDate: '2026-02-16', status: 'unpaid' },

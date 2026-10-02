@@ -172,14 +172,8 @@ pipeline {
           done
 
           echo "Waiting for Prometheus to scrape both environments..."
-          for i in $(seq 1 20); do
-            UP_COUNT=$(curl -s "http://localhost:9090/api/v1/query?query=up{job=~\\"cashrunway-.*\\"}" | grep -o '"value"' | wc -l | tr -d ' ')
-            if [ "$UP_COUNT" -ge 1 ]; then
-              echo "Prometheus is scraping $UP_COUNT CashRunway target(s)."
-              break
-            fi
-            sleep 3
-          done
+                    sleep 20
+          echo "Scrape interval elapsed."
 
           echo "--- Scrape target health ---"
           curl -s http://localhost:9090/api/v1/targets?state=active \

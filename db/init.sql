@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS expenses (
   frequency ENUM('once','weekly','fortnightly','monthly','quarterly') NOT NULL DEFAULT 'once'
 );
 
-INSERT IGNORE INTO account (id, opening_balance, start_date) VALUES (1, 8200.00, '2026-01-05');
+INSERT IGNORE INTO account (id, opening_balance, start_date) VALUES (1, 5000.00, '2026-01-05');
 
 INSERT IGNORE INTO invoices (id, client, amount, due_date, status) VALUES
   ('INV-1042', 'Harbour Dental',   1100.00, '2026-01-19', 'unpaid'),
