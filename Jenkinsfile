@@ -8,7 +8,7 @@ pipeline {
     // Homebrew Jenkins on macOS does not inherit a login shell PATH,
     // so docker, node and npm are added explicitly.
      PATH = "/Users/komalsingh/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
-
+  }
   options {
     timestamps()
     buildDiscarder(logRotator(numToKeepStr: '15'))
