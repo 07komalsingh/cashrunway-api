@@ -2,13 +2,20 @@ pipeline {
   agent any
 
   environment {
-    APP_NAME    = 'cashrunway-api'
-    IMAGE_TAG   = "${env.BUILD_NUMBER}"
-    RELEASE_TAG = "stable"
+    APP_NAME      = 'cashrunway-api'
+    IMAGE_TAG     = "${env.BUILD_NUMBER}"
+    RELEASE_TAG   = "stable"
+    // Separate Docker Compose project names keep the staging, production and
+    // monitoring stacks isolated. Without these they share a project name
+    // derived from the workspace folder and tear each other down.
+    STAGING_PROJECT    = 'cashrunway-staging'
+    PROD_PROJECT       = 'cashrunway-prod'
+    MONITORING_PROJECT = 'cashrunway-monitoring'
     // Homebrew Jenkins on macOS does not inherit a login shell PATH,
-    // so docker, node and npm are added explicitly.
-     PATH = "/Users/komalsingh/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
+    // so Docker Desktop's binary directory is added explicitly.
+    PATH = "/Users/komalsingh/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
   }
+
   options {
     timestamps()
     buildDiscarder(logRotator(numToKeepStr: '15'))
@@ -30,7 +37,6 @@ pipeline {
             -t ${APP_NAME}:latest .
         """
         sh "docker images ${APP_NAME} --format 'table {{.Repository}}\\t{{.Tag}}\\t{{.Size}}'"
-        // Save the image as a versioned artefact and keep it with the build.
         sh "docker save ${APP_NAME}:${IMAGE_TAG} | gzip > ${APP_NAME}-${IMAGE_TAG}.tar.gz"
         archiveArtifacts artifacts: "${APP_NAME}-${IMAGE_TAG}.tar.gz", fingerprint: true
       }
@@ -52,10 +58,8 @@ pipeline {
     stage('3. Code Quality') {
       steps {
         echo 'Running static analysis'
-        sh 'npx eslint src tests --format stylish || true'
+        sh 'npx eslint src tests --format stylish | tee eslint-report.txt || true'
         script {
-          // SonarQube runs as a container on localhost:9000.
-          // If it is not running the stage reports rather than fails the build.
           def sonarUp = sh(script: 'curl -sf http://localhost:9000/api/system/status > /dev/null', returnStatus: true)
           if (sonarUp == 0) {
             sh """
@@ -69,6 +73,7 @@ pipeline {
             echo 'SonarQube not reachable on localhost:9000 - ESLint results used for this stage.'
           }
         }
+        archiveArtifacts artifacts: 'eslint-report.txt', allowEmptyArchive: true
       }
     }
 
@@ -84,6 +89,7 @@ pipeline {
             --severity HIGH,CRITICAL \
             --exit-code 0 \
             --no-progress \
+            --scanners vuln \
             ${APP_NAME}:${IMAGE_TAG} | tee trivy-report.txt
         """
         archiveArtifacts artifacts: 'npm-audit.json,trivy-report.txt', allowEmptyArchive: true
@@ -93,20 +99,20 @@ pipeline {
     stage('5. Deploy to staging') {
       steps {
         echo 'Deploying to the staging environment'
-        sh "IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.staging.yml down --remove-orphans || true"
-        sh "IMAGE_TAG=${IMAGE_TAG} docker compose -f docker-compose.staging.yml up -d"
+        sh "IMAGE_TAG=${IMAGE_TAG} docker compose -p ${STAGING_PROJECT} -f docker-compose.staging.yml down --remove-orphans || true"
+        sh "IMAGE_TAG=${IMAGE_TAG} docker compose -p ${STAGING_PROJECT} -f docker-compose.staging.yml up -d"
         sh '''
           echo "Waiting for staging to become healthy..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:3001/health > /dev/null; then
               echo "Staging is up."
-              curl -s http://localhost:3001/health
+              curl -s http://localhost:3001/health; echo ""
               exit 0
             fi
             sleep 3
           done
           echo "Staging did not become healthy in time."
-          docker compose -f docker-compose.staging.yml logs --tail=50
+          docker compose -p cashrunway-staging -f docker-compose.staging.yml logs --tail=50
           exit 1
         '''
       }
@@ -115,24 +121,33 @@ pipeline {
     stage('6. Release to production') {
       steps {
         echo 'Promoting the verified build to production'
-        // Smoke-test staging before promoting it.
-        sh 'curl -sf http://localhost:3001/api/forecast?weeks=13 > /dev/null'
+        // Smoke-test staging end to end before promoting it.
+        sh '''
+          echo "Smoke testing staging..."
+          curl -sf "http://localhost:3001/api/forecast?weeks=13" > /dev/null
+          curl -sf "http://localhost:3001/api/recommendations" > /dev/null
+          curl -sf "http://localhost:3001/api/invoices" > /dev/null
+          echo "Staging smoke tests passed."
+        '''
         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${APP_NAME}:${RELEASE_TAG}"
         sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${APP_NAME}:release-${IMAGE_TAG}"
-        sh "RELEASE_TAG=${RELEASE_TAG} docker compose -f docker-compose.prod.yml down --remove-orphans || true"
-        sh "RELEASE_TAG=${RELEASE_TAG} docker compose -f docker-compose.prod.yml up -d"
+        sh "RELEASE_TAG=${RELEASE_TAG} docker compose -p ${PROD_PROJECT} -f docker-compose.prod.yml down --remove-orphans || true"
+        sh "RELEASE_TAG=${RELEASE_TAG} docker compose -p ${PROD_PROJECT} -f docker-compose.prod.yml up -d"
         sh '''
           echo "Verifying production..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:3002/health > /dev/null; then
               echo "Production is live."
-              curl -s http://localhost:3002/health
+              curl -s http://localhost:3002/health; echo ""
+              curl -s "http://localhost:3002/api/forecast?weeks=13" | head -c 200; echo ""
+              echo "Both environments running:"
+              docker ps --filter "name=cashrunway" --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
               exit 0
             fi
             sleep 3
           done
           echo "Production did not come up - rolling back."
-          docker compose -f docker-compose.prod.yml down || true
+          docker compose -p cashrunway-prod -f docker-compose.prod.yml down || true
           exit 1
         '''
       }
@@ -141,21 +156,46 @@ pipeline {
     stage('7. Monitoring and Alerting') {
       steps {
         echo 'Starting Prometheus and Grafana, and verifying metrics collection'
-        sh 'docker compose -f docker-compose.monitoring.yml up -d'
+        sh "docker compose -p ${MONITORING_PROJECT} -f docker-compose.monitoring.yml up -d"
         sh '''
-          echo "Waiting for Prometheus..."
+          echo "Waiting for Prometheus to be ready..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:9090/-/ready > /dev/null; then break; fi
+            sleep 2
+          done
+
+          echo "Generating traffic so there are metrics to collect..."
+          for i in $(seq 1 10); do
+            curl -s http://localhost:3002/api/forecast > /dev/null
+            curl -s http://localhost:3002/api/recommendations > /dev/null
+            curl -s http://localhost:3001/api/forecast > /dev/null
+          done
+
+          echo "Waiting for Prometheus to scrape both environments..."
+          for i in $(seq 1 20); do
+            UP_COUNT=$(curl -s "http://localhost:9090/api/v1/query?query=up{job=~\\"cashrunway-.*\\"}" | grep -o '"value"' | wc -l | tr -d ' ')
+            if [ "$UP_COUNT" -ge 1 ]; then
+              echo "Prometheus is scraping $UP_COUNT CashRunway target(s)."
+              break
+            fi
             sleep 3
           done
-          echo "--- Scrape targets ---"
-          curl -s http://localhost:9090/api/v1/targets | head -c 1200
+
+          echo "--- Scrape target health ---"
+          curl -s http://localhost:9090/api/v1/targets?state=active \
+            | tr ',' '\\n' | grep -E '"job"|"health"|"environment"' | head -20
+
           echo ""
           echo "--- Alert rules loaded ---"
-          curl -s http://localhost:9090/api/v1/rules | head -c 800
+          curl -s http://localhost:9090/api/v1/rules | tr ',' '\\n' | grep -E '"name"|"state"' | head -12
+
           echo ""
-          echo "--- Application metrics sample ---"
-          curl -s http://localhost:3002/metrics | grep cashrunway_ | head -10
+          echo "--- Request rate recorded by Prometheus ---"
+          curl -s "http://localhost:9090/api/v1/query?query=sum(cashrunway_http_requests_total)" | head -c 400
+          echo ""
+
+          echo "--- Application metrics sample (production) ---"
+          curl -s http://localhost:3002/metrics | grep cashrunway_ | head -8
         '''
       }
     }
@@ -163,7 +203,11 @@ pipeline {
 
   post {
     success {
-      echo "Pipeline complete. Staging: http://localhost:3001  Production: http://localhost:3002  Grafana: http://localhost:3003"
+      echo "Pipeline complete."
+      echo "Staging:     http://localhost:3001"
+      echo "Production:  http://localhost:3002"
+      echo "Prometheus:  http://localhost:9090"
+      echo "Grafana:     http://localhost:3003  (anonymous viewer access enabled)"
     }
     failure {
       echo 'Pipeline failed - see the stage logs above.'
